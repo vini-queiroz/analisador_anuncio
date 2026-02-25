@@ -8,31 +8,37 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
+from src.processing.normalizer import normalize_price
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 RE_ID = re.compile(r"[?&]id=(\d+)")
 RE_SPACES = re.compile(r"\s+")
 RE_PRICE = re.compile(r"[¥￥]\s*([0-9]{1,6}(?:[.,][0-9]{1,2})?)")
 RE_PRICE_FALLBACK = re.compile(r"\b([0-9]{2,6})\b")
-RE_IPHONE = re.compile(r"(?:iphone|苹果)\s*([0-9]{2})")
-RE_STORAGE_G = re.compile(r"\b(128|256|512)\s*g\b")
-RE_STORAGE_TB = re.compile(r"\b(1)\s*tb\b")
+RE_IPHONE = re.compile(r"(?:iphone|苹果)\s*([0-9]{2})", re.I)
+RE_STORAGE_G = re.compile(r"\b(128|256|512)\s*g\b", re.I)
+RE_STORAGE_TB = re.compile(r"\b(1)\s*tb\b", re.I)
+
 RE_LABEL_MODELO = re.compile(r"(型\s*号|型号)\s*[:：]\s*(.+?)(?=\s*(品\s*牌|存\s*储|运\s*行|版\s*本|成\s*色|$))")
 RE_LABEL_STORAGE = re.compile(r"(存\s*储\s*容\s*量|存储容量)\s*[:：]\s*(.+?)(?=\s*(运\s*行|版\s*本|成\s*色|$))")
 RE_LABEL_RAM = re.compile(r"(运\s*行\s*内\s*存|运行内存)\s*[:：]\s*(.+?)(?=\s*(版\s*本|成\s*色|$))")
 RE_LABEL_VERSION = re.compile(r"(版\s*本|版本)\s*[:：]\s*(.+?)(?=\s*(成\s*色|$))")
 
+RE_ITEM_URL_ABS = re.compile(r"https?://www\.goofish\.com/item\?id=\d+")
+RE_ITEM_URL_REL = re.compile(r"(/item\?id=\d+)")
 
+DESC_START_MARKERS = ["机器简介", "宝贝描述", "商品描述", "苹果", "iPhone"]
+DESC_END_MARKERS = ["聊一聊", "立即购买", "收藏", "进入店铺", "为你推荐", "猜你喜欢", "推荐"]
 
 @dataclass
 class XianyuAd:
     anuncio_id: Optional[str]
-    modelo: Optional[str]            # extraído da descrição (prioridade)
-    versao: Optional[str]            # ex: 海外无锁 / 国行 / 港版
-    memoria_interna: Optional[str]   # ex: 256GB, 1TB
-    memoria_ram: Optional[str]       # ex: 6GB, 8GB
+    modelo: Optional[str]
+    versao: Optional[str]
+    memoria_interna: Optional[str]
+    memoria_ram: Optional[str]
     titulo: Optional[str]
-    preco: Optional[str]
+    preco: Optional[int]
     descricao: Optional[str]
     vendedor: Optional[str]
     origem_anuncio: str
@@ -41,6 +47,8 @@ class XianyuAd:
 
 def _ensure_dirs() -> None:
     Path("data/raw").mkdir(parents=True, exist_ok=True)
+    Path("data/debug").mkdir(parents=True, exist_ok=True)
+    Path("data/pw_user").mkdir(parents=True, exist_ok=True)
 
 
 def _save_jsonl(rows: List[dict], out_path: Path) -> None:
@@ -54,82 +62,99 @@ def _extract_id_from_url(url: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _fast_clean_text(t: str) -> str:
+    return RE_SPACES.sub(" ", (t or "")).strip()
+
+
+def _extract_real_desc_from_body(body_text: str) -> Optional[str]:
+    t = _fast_clean_text(body_text)
+    if not t:
+        return None
+
+    # corte frequente do cabeçalho/política antes do texto real
+    if "承担" in t:
+        t = t.split("承担", 1)[1].strip()
+
+    # início
+    start_idx = None
+    for m in DESC_START_MARKERS:
+        idx = t.find(m)
+        if idx != -1 and (start_idx is None or idx < start_idx):
+            start_idx = idx
+    if start_idx is not None:
+        t = t[start_idx:].strip()
+
+    # fim
+    end_idx = None
+    for m in DESC_END_MARKERS:
+        idx = t.find(m)
+        if idx != -1 and (end_idx is None or idx < end_idx):
+            end_idx = idx
+    if end_idx is not None:
+        t = t[:end_idx].strip()
+
+    if len(t) > 1800:
+        t = t[:1800].strip()
+
+    return t or None
+
+
 def _looks_like_generic_page(title: Optional[str], body_text: str) -> bool:
     if not title:
         return True
-
     t = title.strip()
-
-    # título padrão do site quando não carregou
     if "闲鱼 - 闲不住？上闲鱼" in t:
         return True
-
-    # só considera genérico se tiver rodapé E não tiver preço
-    if (
-        "增值电信业务经营许可证" in body_text
-        and "¥" not in body_text
-        and "￥" not in body_text
-    ):
+    if ("增值电信业务经营许可证" in body_text and "¥" not in body_text and "￥" not in body_text):
         return True
-
     return False
-
 
 
 def _wait_for_item_content(page, timeout_ms: int = 7000) -> None:
     page.wait_for_function(
         """() => {
             const t = document.body ? document.body.innerText : "";
-            return t.includes("¥") || t.includes("￥") || t.includes("机器简介");
+            return t.includes("¥") || t.includes("￥") || t.includes("机器简介") || t.includes("宝贝描述") || t.includes("商品描述");
         }""",
         timeout=timeout_ms
     )
-
 
 
 def _extract_model_from_title(title: Optional[str]) -> Optional[str]:
     if not title:
         return None
     t = title.lower()
-
     m_phone = RE_IPHONE.search(t)
     if not m_phone:
         return None
     phone_num = m_phone.group(1)
-
     m_storage = RE_STORAGE_G.search(t) or RE_STORAGE_TB.search(t)
     if m_storage:
-        if "tb" in m_storage.group(0):
+        if "tb" in m_storage.group(0).lower():
             storage = "1TB"
         else:
             storage = f"{m_storage.group(1)}GB"
         return f"iPhone {phone_num} {storage}"
-
     return f"iPhone {phone_num}"
 
 
 def _extract_price_from_page_text(text: str) -> Optional[str]:
     if not text:
         return None
-
     m = RE_PRICE.search(text)
     if m:
         return m.group(1).replace(",", "").strip()
-
     m2 = RE_PRICE_FALLBACK.search(text)
     if m2:
         return m2.group(1)
-
     return None
+
 
 def _extract_specs_from_description(desc: Optional[str]):
     if not desc:
         return None, None, None, None
 
-    modelo = None
-    versao = None
-    memoria_interna = None
-    memoria_ram = None
+    modelo = versao = memoria_interna = memoria_ram = None
 
     m = RE_LABEL_MODELO.search(desc)
     if m:
@@ -150,6 +175,48 @@ def _extract_specs_from_description(desc: Optional[str]):
     return modelo, versao, memoria_interna, memoria_ram
 
 
+def _collect_item_urls_from_profile(page) -> Set[str]:
+    urls: Set[str] = set()
+
+    # DOM
+    try:
+        for a in page.query_selector_all("a[href]"):
+            href = a.get_attribute("href") or ""
+            if "id=" not in href:
+                continue
+            if "/item" in href or "goofish.com/item" in href:
+                full = href if href.startswith("http") else "https://www.goofish.com" + href
+                if "goofish.com/item" in full and "id=" in full:
+                    urls.add(full)
+    except Exception:
+        pass
+
+    # HTML regex fallback
+    try:
+        html = page.content()
+        for u in RE_ITEM_URL_ABS.findall(html):
+            urls.add(u)
+        for rel in RE_ITEM_URL_REL.findall(html):
+            urls.add("https://www.goofish.com" + rel)
+    except Exception:
+        pass
+
+    return urls
+
+
+def _debug_dump(page, prefix: str) -> None:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    png = Path(f"data/debug/{prefix}_{ts}.png")
+    html = Path(f"data/debug/{prefix}_{ts}.html")
+    try:
+        page.screenshot(path=str(png), full_page=True)
+    except Exception:
+        pass
+    try:
+        html.write_text(page.content(), encoding="utf-8")
+    except Exception:
+        pass
+
 def scrape_vendor_profile(
     profile_url: str,
     limit: int = 30,
@@ -162,47 +229,47 @@ def scrape_vendor_profile(
     seen_urls: Set[str] = set()
     debug = {"profile_url": profile_url, "found_item_urls": 0, "detail_success": 0, "detail_fail": 0}
 
+    user_data_dir = str(Path("data/pw_user").resolve())
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
             headless=headless,
-            args=["--disable-blink-features=AutomationControlled"]
-        )
-
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 720},
+            args=["--disable-blink-features=AutomationControlled"],
             locale="zh-CN",
+            viewport={"width": 1280, "height": 800},
         )
 
-        # ✅ BLOQUEIA RECURSOS PESADOS (GANHO GRANDE)
         def _route_handler(route, request):
-            rt = request.resource_type
-            if rt in ("image", "media", "font"):
+            if request.resource_type in ("image", "media", "font"):
                 return route.abort()
             return route.continue_()
 
         context.route("**/*", _route_handler)
 
-        # Uma página pro perfil + uma pro detalhe
         page = context.new_page()
         detail_page = context.new_page()
 
         # PERFIL
-        page.goto(profile_url, wait_until="domcontentloaded")
+        page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
+
+        # espera até aparecer pelo menos 1 link de item (sem ENTER)
         try:
-            page.wait_for_load_state("load", timeout=12000)
+            page.wait_for_function(
+                """() => {
+                    const html = document.documentElement.innerHTML;
+                    return html.includes("/item?id=");
+                }""",
+                timeout=15000
+            )
         except PlaywrightTimeoutError:
             pass
 
-        # scroll (mais rápido)
+        # scroll automático
         last_height = 0
         for _ in range(max_scrolls):
-            page.mouse.wheel(0, 2800)
-            time.sleep(random.uniform(0.20, 0.45))
+            page.mouse.wheel(0, 3000)
+            time.sleep(random.uniform(0.08, 0.15))
             try:
                 height = page.evaluate("() => document.body.scrollHeight")
             except Exception:
@@ -211,17 +278,16 @@ def scrape_vendor_profile(
                 break
             last_height = height
 
-        # coletar URLs
-        item_urls: Set[str] = set()
-        for a in page.query_selector_all("a[href]"):
-            href = a.get_attribute("href") or ""
-            if "/item" not in href:
-                continue
-            full = href if href.startswith("http") else "https://www.goofish.com" + href
-            if "goofish.com/item" in full or "h5.m.goofish.com/item" in full:
-                item_urls.add(full)
-
+        item_urls = _collect_item_urls_from_profile(page)
         debug["found_item_urls"] = len(item_urls)
+
+        if debug["found_item_urls"] == 0:
+            print("⚠️ Nenhum item encontrado. Possível bloqueio ou perfil vazio.")
+            detail_page.close()
+            page.close()
+            context.close()
+            return collected, debug
+
         item_list = list(item_urls)[:limit]
 
         # DETALHES
@@ -230,107 +296,46 @@ def scrape_vendor_profile(
                 continue
             seen_urls.add(url)
 
-            time.sleep(random.uniform(0.18, 0.55))
+            time.sleep(random.uniform(0.05, 0.12))
 
             try:
-                ok = False
-                last_title = None
-                last_body = ""
+                detail_page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-                for attempt in range(2):  # ✅ retry 1x
-                    detail_page.goto(url, wait_until="domcontentloaded")
-                    try:
-                        detail_page.wait_for_load_state("load", timeout=9000)
-                    except PlaywrightTimeoutError:
-                        pass
+                try:
+                    _wait_for_item_content(detail_page, timeout_ms=7000)
+                except PlaywrightTimeoutError:
+                    pass
 
-                    # espera sinais de conteúdo do item (sem CSS)
-                    try:
-                        _wait_for_item_content(detail_page, timeout_ms=9000)
-                    except PlaywrightTimeoutError:
-                        pass
+                title = detail_page.title()
+                title = _fast_clean_text(title) if title else None
 
-                    # title
-                    try:
-                        last_title = detail_page.title()
-                        last_title = RE_SPACES.sub(" ", last_title).strip() if last_title else None
-                    except Exception:
-                        last_title = None
+                body_text = detail_page.inner_text("body") or ""
+                body_text = _fast_clean_text(body_text)
 
-                    # body
-                    try:
-                        last_body = detail_page.inner_text("body") or ""
-                        last_body = RE_SPACES.sub(" ", last_body).strip()
-                    except Exception:
-                        last_body = ""
-
-                    if not _looks_like_generic_page(last_title, last_body):
-                        ok = True
-                        break
-
-                    time.sleep(random.uniform(0.35, 0.75))
-                    try:
-                        detail_page.reload(wait_until="domcontentloaded")
-                    except Exception:
-                        pass
-
-                if not ok:
+                if _looks_like_generic_page(title, body_text):
                     debug["detail_fail"] += 1
                     continue
 
-                title = last_title
-                body_text = last_body
-                desc = None
-                if body_text:
-
-                    # 1️⃣ corta no bloco de recomendação
-                    cut_markers = [
-                        "为你推荐",
-                        "推荐",
-                        "猜你喜欢"
-                    ]
-
-                    clean_text = body_text
-                    for marker in cut_markers:
-                        idx = clean_text.find(marker)
-                        if idx != -1:
-                            clean_text = clean_text[:idx]
-                            break
-
-                    # 2️⃣ remove o prefixo inicial do site se existir
-                    if "机器简介" in clean_text:
-                        idx = clean_text.find("机器简介")
-                        clean_text = clean_text[idx:]
-
-                    # 3️⃣ limpeza final
-                    clean_text = RE_SPACES.sub(" ", clean_text).strip()
-
-                    desc = clean_text
-                
+                desc = _extract_real_desc_from_body(body_text)
                 price = _extract_price_from_page_text(body_text)
-                # 🔹 Extrai specs da descrição primeiro
-                modelo_desc, versao, memoria_interna, memoria_ram = _extract_specs_from_description(desc)
 
-                # 🔹 Se não encontrou modelo na descrição, usa título
+                modelo_desc, versao, memoria_interna, memoria_ram = _extract_specs_from_description(desc)
                 modelo = modelo_desc if modelo_desc else _extract_model_from_title(title)
 
-                ad = XianyuAd(
-                anuncio_id=_extract_id_from_url(url),
-                modelo=modelo,
-                versao=versao,
-                memoria_interna=memoria_interna,
-                memoria_ram=memoria_ram,
-                titulo=title,
-                preco=price,
-                descricao=desc,
-                vendedor=None,
-                origem_anuncio=origem,
-                url_anuncio=url,
-                )
+                collected.append(XianyuAd(
+                    anuncio_id=_extract_id_from_url(url),
+                    modelo=modelo,
+                    versao=versao,
+                    memoria_interna=memoria_interna,
+                    memoria_ram=memoria_ram,
+                    titulo=title,
+                    preco=normalize_price(price),
+                    descricao=desc,
+                    vendedor=None,
+                    origem_anuncio=origem,
+                    url_anuncio=url,
+                ))
 
-
-
-                collected.append(ad)
                 debug["detail_success"] += 1
 
             except Exception as e:
@@ -341,20 +346,14 @@ def scrape_vendor_profile(
         detail_page.close()
         page.close()
         context.close()
-        browser.close()
 
     return collected, debug
 
-
 def main():
-    parser = argparse.ArgumentParser(description="Scraper simples do Xianyu (goofish.com) a partir da página do vendedor.")
-    parser.add_argument(
-        "--profile-url",
-        required=True,
-        help="URL do perfil do vendedor (ex: https://www.goofish.com/personal?userId=918690794)",
-    )
-    parser.add_argument("--limit", type=int, default=30, help="Quantidade máxima de anúncios")
-    parser.add_argument("--headless", action="store_true", help="Rodar headless (sem abrir janela)")
+    parser = argparse.ArgumentParser(description="Scraper do Xianyu (goofish.com) a partir do perfil do vendedor.")
+    parser.add_argument("--profile-url", required=True)
+    parser.add_argument("--limit", type=int, default=30)
+    parser.add_argument("--headless", action="store_true")
     args = parser.parse_args()
 
     _ensure_dirs()
@@ -362,16 +361,14 @@ def main():
     ads, debug = scrape_vendor_profile(
         profile_url=args.profile_url,
         limit=args.limit,
-        headless=args.headless,
+        headless=args.headless,  # primeira vez: NÃO use --headless
     )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = Path(f"data/raw/anuncios_xianyu_vendor_{ts}.jsonl")
+    _save_jsonl([asdict(a) for a in ads], out_path)
 
-    rows = [asdict(a) for a in ads]
-    _save_jsonl(rows, out_path)
-
-    print("=== Xianyu Scraper (SIMPLE) ===")
+    print("\n=== Xianyu Scraper (PERSISTENT SESSION) ===")
     print("Profile:", debug["profile_url"])
     print("Item URLs encontrados:", debug["found_item_urls"])
     print("Detalhes OK:", debug["detail_success"])
