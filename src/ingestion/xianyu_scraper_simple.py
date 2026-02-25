@@ -374,7 +374,10 @@ def main():
     print("Detalhes OK:", debug["detail_success"])
     print("Detalhes FAIL:", debug["detail_fail"])
     print("Arquivo gerado:", out_path.resolve())
+    inicio = time.perf_counter()
 
+    fim = time.perf_counter()
+    print(f"Tempo decorrido: {fim - inicio:.2f} segundos")
 
 if __name__ == "__main__":
     main()

@@ -7,7 +7,7 @@ from src.processing.normalizer import normalize_model_fields, normalize_price
 # se você tiver essa função no normalizer, descomente:
 # from src.processing.normalizer import extract_commercial_flags
 
-INPUT = Path("data/raw/anuncios_xianyu_vendor_20260225_141407.jsonl")
+INPUT = Path("data/raw/anuncios_xianyu_vendor_20260225_174900.jsonl")
 
 def pct(a, b):
     return 0 if b == 0 else round(100 * a / b, 1)
