@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 from src.processing.normalizer import normalize_model_fields, extract_commercial_flags, normalize_price
 from src.processing.scoring_engine import score_ad_v1
 from src.processing.decision_engine import decide_ad_v1
+from src.processing.finance_engine import load_finance_config, load_resale_table_csv, compute_financials
 
 
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -32,10 +33,13 @@ def main():
     parser.add_argument("--output", default="data/processed/anuncios_ranked_v1.jsonl", help="Saída JSONL")
     args = parser.parse_args()
 
+
     in_path = Path(args.input)
     out_path = Path(args.output)
 
     ads = load_jsonl(in_path)
+    finance_cfg = load_finance_config(Path("data/config/finance_config.json"))
+    resale_table = load_resale_table_csv(Path("data/config/precos_revenda.csv"))   
 
     enriched: List[Dict[str, Any]] = []
     for ad in ads:
@@ -77,7 +81,16 @@ def main():
         out["decision_version"] = decision.decision_version
         out["status_decisao"] = decision.status_decisao
         out["decision_reasons"] = decision.decision_reasons
+        fin = compute_financials(
+            preco_compra_cny=out.get("preco"),
+            modelo=out.get("modelo"),
+            memoria_interna=out.get("memoria_interna"),
+            versao=out.get("versao"),
+            resale_table=resale_table,
+            cfg=finance_cfg,
+        )
 
+        out.update(fin)
         enriched.append(out)
 
     # Ranking determinístico:

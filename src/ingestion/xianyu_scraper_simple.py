@@ -11,6 +11,8 @@ from typing import List, Optional, Set, Tuple
 from src.processing.normalizer import normalize_price
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
+inicio = time.perf_counter()
+
 RE_ID = re.compile(r"[?&]id=(\d+)")
 RE_SPACES = re.compile(r"\s+")
 RE_PRICE = re.compile(r"[¥￥]\s*([0-9]{1,6}(?:[.,][0-9]{1,2})?)")
@@ -374,10 +376,14 @@ def main():
     print("Detalhes OK:", debug["detail_success"])
     print("Detalhes FAIL:", debug["detail_fail"])
     print("Arquivo gerado:", out_path.resolve())
-    inicio = time.perf_counter()
+    
+    for i in range(1000000):
+        pass
 
     fim = time.perf_counter()
-    print(f"Tempo decorrido: {fim - inicio:.2f} segundos")
+
+    print(f"Tempo de excução: {fim-inicio:.4f} segundos")
+    
 
 if __name__ == "__main__":
     main()
