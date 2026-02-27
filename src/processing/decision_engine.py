@@ -14,9 +14,24 @@ DECISION_VERSION_V1 = "v1"
 
 
 def decide_ad_v1(flags: Dict[str, Any]) -> DecisionResult:
+    """
+    Gates determinísticos (conservador).
+    Espera em flags:
+      - bateria_percentual: Optional[int]
+      - tem_desmontagem: bool
+      - tem_problema_tela: bool
+      - versao: Optional[str]
+      - tem_sim_lock: bool
+      - tem_icloud_lock: bool
+      - tem_config_lock: bool
+      - versao_americana: bool (info)
+      - menciona_nao_suporta_us_sim: bool (info)
+    """
     reasons: List[str] = []
 
-    # 1) bloqueios críticos primeiro
+    # =========================================================
+    # 0) BLOQUEIOS CRÍTICOS (hard reprova)
+    # =========================================================
     if flags.get("tem_sim_lock") is True:
         reasons.append("Reprovado: SIM/operadora lock (有锁/卡贴机).")
         reasons.append(f"Tradução: {flags.get('sim_lock_status_pt')}")
@@ -32,38 +47,33 @@ def decide_ad_v1(flags: Dict[str, Any]) -> DecisionResult:
         reasons.append(f"Tradução: {flags.get('config_lock_status_pt')}")
         return DecisionResult(DECISION_VERSION_V1, "REPROVADO", reasons)
 
-    # 2) infos (não gate)
+    # =========================================================
+    # 1) INFOS (não bloqueiam)
+    # =========================================================
     if flags.get("versao_americana") is True:
-        reasons.append("Info: versão americana (美版/US).")
+        reasons.append("Info: versão americana (美版/US). Penalidade leve ou nenhuma (política atual).")
 
     if flags.get("menciona_nao_suporta_us_sim") is True:
         reasons.append("Info: anúncio menciona que não suporta SIM dos EUA.")
-    """
-    Gates determinísticos (conservador).
-    Espera em flags:
-      - bateria_percentual: Optional[int]
-      - tem_desmontagem: bool
-      - tem_problema_tela: bool
-      - versao: Optional[str]
-    """
-    if flags.get("tem_sim_lock") is True:
-        reasons.append("Reprovado: SIM/operadora lock (有锁/卡贴机).")
-        reasons.append(f"Tradução: {flags.get('sim_lock_status_pt')}")
-        return DecisionResult(DECISION_VERSION_V1, "REPROVADO", reasons)
+
+    # =========================================================
+    # 2) EXTRAÇÕES
+    # =========================================================
     tem_tela = bool(flags.get("tem_problema_tela"))
     tem_desmont = bool(flags.get("tem_desmontagem"))
 
     bat = flags.get("bateria_percentual")
-    bat_i: Optional[int]
     try:
-        bat_i = int(bat) if bat is not None else None
+        bat_i: Optional[int] = int(bat) if bat is not None else None
     except Exception:
         bat_i = None
 
     versao = flags.get("versao")
     versao_ok = bool(versao and str(versao).strip())
 
-    # --- REPROVAÇÕES (hard)
+    # =========================================================
+    # 3) REPROVAÇÕES (hard)
+    # =========================================================
     if tem_tela:
         reasons.append("Reprovado: problema de tela (tem_problema_tela=True).")
         return DecisionResult(DECISION_VERSION_V1, "REPROVADO", reasons)
@@ -76,15 +86,22 @@ def decide_ad_v1(flags: Dict[str, Any]) -> DecisionResult:
         reasons.append("Reprovado: indício de desmontagem + bateria abaixo de 85%.")
         return DecisionResult(DECISION_VERSION_V1, "REPROVADO", reasons)
 
-    # --- PENDÊNCIAS (não aprova sem info)
+    # =========================================================
+    # 4) PENDÊNCIAS (não aprova sem info)
+    # =========================================================
+    pendencias: List[str] = []
     if bat_i is None:
-        reasons.append("Pendente: bateria não informada (não aprova automaticamente).")
+        pendencias.append("Pendente: bateria não informada (não aprova automaticamente).")
     if not versao_ok:
-        reasons.append("Pendente: versão não informada (não aprova automaticamente).")
+        pendencias.append("Pendente: versão não informada (não aprova automaticamente).")
 
-    if reasons:
+    if pendencias:
+        # mantém infos + adiciona pendências
+        reasons.extend(pendencias)
         return DecisionResult(DECISION_VERSION_V1, "PENDENTE", reasons)
-    
-    # --- APROVADO
-    reasons.append("Aprovado: passou nos critérios conservadores (sem mod tela, bateria ok, sem pendências).")
+
+    # =========================================================
+    # 5) APROVADO
+    # =========================================================
+    reasons.append("Aprovado: passou nos critérios conservadores (sem tela, bateria ok, sem pendências).")
     return DecisionResult(DECISION_VERSION_V1, "APROVADO", reasons)
