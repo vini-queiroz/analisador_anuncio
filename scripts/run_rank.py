@@ -85,7 +85,6 @@ def main():
             preco_compra_cny=out.get("preco"),
             modelo=out.get("modelo"),
             memoria_interna=out.get("memoria_interna"),
-            versao=out.get("versao"),
             resale_table=resale_table,
             cfg=finance_cfg,
         )

@@ -3,6 +3,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
+import re
+
 
 
 @dataclass(frozen=True)
@@ -26,59 +28,64 @@ def load_finance_config(path: Path) -> FinanceConfig:
     )
 
 
-def load_resale_table_csv(path: Path) -> Dict[Tuple[str, str, str], float]:
-    """
-    Chave: (modelo, memoria_interna, versao) -> preco_revenda_brl
-    """
-    table: Dict[Tuple[str, str, str], float] = {}
-    with path.open("r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            modelo = (row.get("modelo") or "").strip()
-            mem = (row.get("memoria_interna") or "").strip()
-            versao = (row.get("versao") or "").strip()
-            preco = row.get("preco_revenda_brl")
+_RE_SPACES = re.compile(r"\s+")
 
-            if not modelo or not mem or preco is None or str(preco).strip() == "":
+def _norm_key(s: str) -> str:
+    # remove espaços múltiplos e espaços “invisíveis”
+    s = (s or "").replace("\u00A0", " ").strip()   # NBSP -> space
+    s = _RE_SPACES.sub(" ", s)
+    return s
+
+def _norm_mem(s: str) -> str:
+    s = _norm_key(s).upper().replace(" ", "")
+    return s
+
+def load_resale_table_csv(path: Path) -> Dict[Tuple[str, str], float]:
+    """
+    Lê CSV de revenda de forma robusta (inclui BOM).
+    Chave: (modelo, memoria_interna) -> preco_revenda_brl
+    """
+    table: Dict[Tuple[str, str], float] = {}
+
+    # utf-8-sig remove BOM automaticamente
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        # detectar delimitador: ',' ou ';'
+        sample = f.read(2048)
+        f.seek(0)
+        delimiter = ";" if sample.count(";") > sample.count(",") else ","
+
+        reader = csv.DictReader(f, delimiter=delimiter)
+        for row in reader:
+            modelo = _norm_key(row.get("modelo", ""))
+            mem = _norm_mem(row.get("memoria_interna", ""))
+            preco_raw = (row.get("preco_revenda_brl") or "").strip()
+
+            if not modelo or not mem or not preco_raw:
                 continue
 
-            table[(modelo, mem, versao)] = float(preco)
+            # aceita "8.400", "8,400", "8400", "R$ 8.400"
+            preco_clean = (
+                preco_raw.replace("R$", "")
+                .replace(".", "")     # remove separador de milhar
+                .replace(",", ".")    # decimal pt -> en
+                .strip()
+            )
+            try:
+                preco = float(preco_clean)
+            except ValueError:
+                continue
+
+            table[(modelo, mem)] = preco
+
     return table
 
-
-def lookup_resale_price(
-    table: Dict[Tuple[str, str, str], float],
-    modelo: str,
-    memoria_interna: str,
-    versao: Optional[str],
-) -> Optional[float]:
-    """
-    1) tenta match exato com versao
-    2) fallback: match com versao em branco na tabela
-    3) fallback: ignora versao (qualquer versao) se houver apenas 1 candidato
-    """
-    v = (versao or "").strip()
-    key_exact = (modelo, memoria_interna, v)
-    if key_exact in table:
-        return table[key_exact]
-
-    key_blank = (modelo, memoria_interna, "")
-    if key_blank in table:
-        return table[key_blank]
-
-    # fallback: qualquer versao
-    candidates = [price for (m, mem, ver), price in table.items() if m == modelo and mem == memoria_interna]
-    if len(candidates) == 1:
-        return candidates[0]
-
-    return None
-
+def lookup_resale_price(table: Dict[Tuple[str, str], float], modelo: str, memoria_interna: str) -> Optional[float]:
+    return table.get((_norm_key(modelo), _norm_mem(memoria_interna)))
 
 def compute_financials(
     preco_compra_cny: Optional[int],
     modelo: Optional[str],
     memoria_interna: Optional[str],
-    versao: Optional[str],
     resale_table: Dict[Tuple[str, str, str], float],
     cfg: FinanceConfig,
 ) -> Dict[str, Any]:
@@ -100,7 +107,7 @@ def compute_financials(
         return out
 
     preco_compra_brl = round(preco_compra_cny * cfg.fx_cny_brl, 2)
-    preco_revenda_brl = lookup_resale_price(resale_table, modelo, memoria_interna, versao)
+    preco_revenda_brl = lookup_resale_price(resale_table, modelo, memoria_interna)
 
     out["preco_compra_cny"] = preco_compra_cny
     out["preco_compra_brl"] = preco_compra_brl

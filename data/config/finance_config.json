@@ -2,7 +2,7 @@
   "fx_cny_brl": 0.89,
   "frete_brl": 300,
   "imposto": {
-    "modo": "percentual",
+    "modo": "fixo",
     "aliquota": 0.0,
     "fixo_brl": 150
   }

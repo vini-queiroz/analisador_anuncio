@@ -45,7 +45,7 @@ def main():
     parser.add_argument("--show-reasons", action="store_true", help="Mostra reasons completos do scoring")
     parser.add_argument("--show-decision", action="store_true", help="Mostra decision_reasons completos (gates)")
     parser.add_argument("--show-desc", action="store_true", help="Mostra um trecho da descricao")
-
+    parser.add_argument("--only-finance-ok", action="store_true", help="Mostra apenas anúncios com finance_ok=true")
     args = parser.parse_args()
 
     in_path = Path(args.input)
@@ -67,6 +67,9 @@ def main():
                 unique[key] = r
 
     ranked = list(unique.values())
+
+    if args.only_finance_ok:
+        ranked = [r for r in ranked if r.get("finance_ok") is True]
 
     # --- Ordenação (prioriza status, depois score)
     status_rank = {"APROVADO": 2, "PENDENTE": 1, "REPROVADO": 0}
@@ -140,6 +143,30 @@ def main():
             desc = safe_str(r.get("descricao"))
             if desc:
                 print(f"    DESC: {shorten(desc, 220)}")
+
+        # ===============================
+        # BLOCO FINANCEIRO
+        # ===============================
+
+        finance_ok = r.get("finance_ok")
+
+        if finance_ok:
+            preco_compra = r.get("preco_compra_brl")
+            preco_revenda = r.get("preco_revenda_brl")
+            custo_total = r.get("custo_total_brl")
+            lucro = r.get("lucro_previsto_brl")
+            margem = r.get("margem_prevista_pct")
+
+            print(f"    💰 Compra (BRL): {preco_compra}")
+            print(f"    🏷 Revenda (BRL): {preco_revenda}")
+            print(f"    📦 Custo total: {custo_total}")
+            print(f"    💵 Lucro previsto: {lucro}")
+            print(f"    📈 Margem prevista: {margem}%")
+        else:
+            print("    ⚠ Financeiro: cálculo indisponível")
+            reasons = r.get("finance_reasons") or []
+            for fr in reasons:
+                print(f"    [FINANCE] - {fr}")
 
         print()
 
