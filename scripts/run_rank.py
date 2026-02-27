@@ -100,13 +100,36 @@ def main():
         b = x.get("bateria_percentual")
         return int(b) if isinstance(b, int) else -1
 
+        # Ranking modo COMPRA:
+    # 1) APROVADO > PENDENTE > REPROVADO
+    # 2) finance_ok True > False
+    # 3) margem_prevista_pct desc (None -> -999999)
+    # 4) score_final desc
+    # 5) bateria desc (None -> -1)
+    # 6) desempates estáveis
+    status_rank = {"APROVADO": 2, "PENDENTE": 1, "REPROVADO": 0}
+
+    def bat_key(x: Dict[str, Any]) -> int:
+        b = x.get("bateria_percentual")
+        return int(b) if isinstance(b, int) else -1
+
+    def finance_rank(x: Dict[str, Any]) -> int:
+        return 1 if x.get("finance_ok") is True else 0
+
+    def margem_key(x: Dict[str, Any]) -> float:
+        m = x.get("margem_prevista_pct")
+        try:
+            return float(m)
+        except Exception:
+            return -999999.0
+
     enriched.sort(
         key=lambda x: (
             status_rank.get(x.get("status_decisao", "PENDENTE"), 1),
+            finance_rank(x),
+            margem_key(x),
             int(x.get("score_final") or 0),
             bat_key(x),
-            0 if not x.get("tem_problema_tela") else -1,
-            0 if not x.get("tem_desmontagem") else -1,
             str(x.get("anuncio_id") or ""),
             str(x.get("url_anuncio") or ""),
         ),

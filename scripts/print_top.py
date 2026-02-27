@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as f:
@@ -25,11 +24,9 @@ def shorten(text: str, max_len: int = 140) -> str:
         return t
     return t[: max_len - 1] + "…"
 
-
-def bat_key(x: Dict[str, Any]) -> int:
+def bat_key(x):
     b = x.get("bateria_percentual")
     return int(b) if isinstance(b, int) else -1
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -73,15 +70,26 @@ def main():
 
     # --- Ordenação (prioriza status, depois score)
     status_rank = {"APROVADO": 2, "PENDENTE": 1, "REPROVADO": 0}
+
+    def finance_rank(x):
+        return 1 if x.get("finance_ok") is True else 0
+
+    def margem_key(x):
+        m = x.get("margem_prevista_pct")
+        try:
+            return float(m)
+        except Exception:
+            return -999999.0
+
     ranked.sort(
         key=lambda x: (
             status_rank.get(x.get("status_decisao", "PENDENTE"), 1),
+            finance_rank(x),
+            margem_key(x),
             int(x.get("score_final") or 0),
-            bat_key(x),
-            0 if not x.get("tem_problema_tela") else -1,
-            0 if not x.get("tem_desmontagem") else -1,
-            safe_str(x.get("anuncio_id")),
-            safe_str(x.get("url_anuncio")),
+            bat_key(x),  # usa a função global
+            safe_str(x.get("anuncio_id") or ""),
+            safe_str(x.get("url_anuncio") or ""),
         ),
         reverse=True,
     )

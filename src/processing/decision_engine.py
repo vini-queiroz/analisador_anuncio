@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -15,6 +14,30 @@ DECISION_VERSION_V1 = "v1"
 
 
 def decide_ad_v1(flags: Dict[str, Any]) -> DecisionResult:
+    reasons: List[str] = []
+
+    # 1) bloqueios críticos primeiro
+    if flags.get("tem_sim_lock") is True:
+        reasons.append("Reprovado: SIM/operadora lock (有锁/卡贴机).")
+        reasons.append(f"Tradução: {flags.get('sim_lock_status_pt')}")
+        return DecisionResult(DECISION_VERSION_V1, "REPROVADO", reasons)
+
+    if flags.get("tem_icloud_lock") is True:
+        reasons.append("Reprovado: Apple ID/iCloud lock (risco de bloqueio).")
+        reasons.append(f"Tradução: {flags.get('icloud_status_pt')}")
+        return DecisionResult(DECISION_VERSION_V1, "REPROVADO", reasons)
+
+    if flags.get("tem_config_lock") is True:
+        reasons.append("Reprovado: Config/MDM lock.")
+        reasons.append(f"Tradução: {flags.get('config_lock_status_pt')}")
+        return DecisionResult(DECISION_VERSION_V1, "REPROVADO", reasons)
+
+    # 2) infos (não gate)
+    if flags.get("versao_americana") is True:
+        reasons.append("Info: versão americana (美版/US).")
+
+    if flags.get("menciona_nao_suporta_us_sim") is True:
+        reasons.append("Info: anúncio menciona que não suporta SIM dos EUA.")
     """
     Gates determinísticos (conservador).
     Espera em flags:
@@ -23,8 +46,10 @@ def decide_ad_v1(flags: Dict[str, Any]) -> DecisionResult:
       - tem_problema_tela: bool
       - versao: Optional[str]
     """
-    reasons: List[str] = []
-
+    if flags.get("tem_sim_lock") is True:
+        reasons.append("Reprovado: SIM/operadora lock (有锁/卡贴机).")
+        reasons.append(f"Tradução: {flags.get('sim_lock_status_pt')}")
+        return DecisionResult(DECISION_VERSION_V1, "REPROVADO", reasons)
     tem_tela = bool(flags.get("tem_problema_tela"))
     tem_desmont = bool(flags.get("tem_desmontagem"))
 
@@ -59,7 +84,7 @@ def decide_ad_v1(flags: Dict[str, Any]) -> DecisionResult:
 
     if reasons:
         return DecisionResult(DECISION_VERSION_V1, "PENDENTE", reasons)
-
+    
     # --- APROVADO
-    reasons.append("Aprovado: passou nos critérios conservadores (sem tela, bateria ok, sem pendências).")
+    reasons.append("Aprovado: passou nos critérios conservadores (sem mod tela, bateria ok, sem pendências).")
     return DecisionResult(DECISION_VERSION_V1, "APROVADO", reasons)

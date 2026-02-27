@@ -1,0 +1,6 @@
+2026/02/27-14:55:11.521 2074 Reusing MANIFEST C:\Users\Delivery\Desktop\Vinicius\analisador_anuncio\data\pw_user\Default\IndexedDB\https_www.goofish.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/02/27-14:55:11.521 2074 Recovering log #3
+2026/02/27-14:55:11.587 2074 Reusing old log C:\Users\Delivery\Desktop\Vinicius\analisador_anuncio\data\pw_user\Default\IndexedDB\https_www.goofish.com_0.indexeddb.leveldb/000003.log 
+2026/02/27-14:55:38.498 2074 Level-0 table #5: started
+2026/02/27-14:55:38.530 2074 Level-0 table #5: 699141 bytes OK
+2026/02/27-14:55:38.536 2074 Delete type=0 #3
